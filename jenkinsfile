@@ -1,0 +1,122 @@
+	node {
+
+	try {	
+      
+		checkout scm
+		
+		stage ('prepare .env'){
+		sh 'export KUBECONFIG=:/home/tomcat/.kube/config-Synereo'
+		sh 'env'
+		sh '''
+			touch .env
+			echo "NODE_ENV=${NODE_ENV}" > .env
+			echo "DB_URL=${DB_URL}" >> .env
+			echo "JWT_SECRET=${JWT_SECRET}" >> .env
+			echo "JWT_COOKIE_NAME=${JWT_COOKIE_NAME}" >> .env
+      			echo "SERVER_PORT=${SERVER_PORT}" >> .env
+			echo "TX_SERVER_URL=${TX_SERVER_URL}" >> .env
+			echo "RESTIFY_PREFIX=${RESTIFY_PREFIX}" >> .env
+			echo "RESTIFY_VERSION=${RESTIFY_VERSION}" >> .env
+			echo "AWS_KEY=${AWS_KEY}" >> .env
+			echo "AWS_SECRET=${AWS_SECRET}" >> .env
+			echo "AWS_REGION=${AWS_REGION}" >> .env
+			echo "MIN_TRANSFER_AMOUNT=${MIN_TRANSFER_AMOUNT}" >> .env
+		'''
+		}
+		
+		stage('Build app') {
+    	
+			print "Building app..."
+      		//sh 'npm install'
+			sh 'yarn install'
+			sh 'yarn build'
+			print "App built."
+		}
+		
+		stage('test before build') {
+			print "SKIPPING - Testing app..."
+			sh 'whoami'
+			/*try{
+				sh 'sudo yarn test'
+			} catch(err) {
+				// handle the exception; or ignore it
+				throw err
+			  }finally {
+				print "Publish test results..."
+				junit 'test-results.xml'
+			}*/
+		}
+
+		stage('docker create and push') {
+			sh 'docker build -t hyperspace-admin .'
+      
+      // push to reposiroty
+      print 'push to ECR repository'
+			sh 'aws ecr get-login --no-include-email --region us-east-1 | sh'
+			sh 'docker tag hyperspace-admin:latest 733661968561.dkr.ecr.us-east-1.amazonaws.com/hyperspace-admin:latest'
+			sh 'docker push 733661968561.dkr.ecr.us-east-1.amazonaws.com/hyperspace-admin:latest'  
+			sh 'docker rmi -f hyperspace-admin:latest'
+		}
+		
+		stage('Deploy to Kubernetes') {
+			//sh 'kubectl delete pod/$(kubectl get pod | grep hyperspace-admin | awk \'{print $1}\') || echo 1'
+			//sh 'kubectl run hyperspace-admin --image 733661968561.dkr.ecr.us-east-1.amazonaws.com/hyperspace-admin:latest --port 8082 || kubectl set image deployment/hyperspace-admin hyperspace-admin=733661968561.dkr.ecr.us-east-1.amazonaws.com/hyperspace-admin:latest'
+			//sh 'kubectl expose deployment hyperspace-admin --type=LoadBalancer --name hyperspace-admin --port 443 --target-port 8082 || echo 1'
+			try{
+			  currentBuild.result = "SUCCESS"
+			  retry(5) {
+			      sh 'kubectl run hyperspace-admin --image 733661968561.dkr.ecr.us-east-1.amazonaws.com/hyperspace-admin:latest --image-pull-policy Always --port 8082 || kubectl delete pods $(kubectl get pod | grep hyperspace-admin | awk \'{print $1}\')'
+			      sleep 50
+			   //   sh 'kubectl delete pods $(kubectl get pods -Lrun | grep notworking | awk \'{print $1}\')' 
+			      sh 'kubectl expose deployment hyperspace-admin --type=LoadBalancer --name hyperspace-admin --port 443 --target-port 8082 || echo 1'
+			   //   sleep 5
+			      sh 'curl -s -I -X GET https://devboserver.hyperspace.app/health | grep "HTTP.*200"'
+			      currentBuild.result = "SUCCESS"
+			  }
+		       } catch (e) {
+			  currentBuild.result = "FAILURE"
+			  println("kubernetes deploy - catch exeption. currentBuild.result: ${currentBuild.result}")
+		       }
+		}
+		
+	} catch (e) {
+		currentBuild.result = "FAILURE"
+		throw e
+	} finally {
+		notifyBuild(currentBuild.result)
+  }
+}
+
+def notifyBuild(String buildStatus = 'STARTED') {
+  // build status of null means successful
+  buildStatus =  buildStatus ?: 'SUCCESS'
+ 
+  // Default values
+  def colorName = 'RED'
+  def colorCode = '#FF0000'
+  def subject = "${buildStatus}: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]'"
+  def summary = "${subject} (${env.BUILD_URL})"
+  def details = """<p>${buildStatus}: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]':</p>
+    <p>Check console output at "<a href="${env.BUILD_URL}">${env.JOB_NAME} [${env.BUILD_NUMBER}]</a>"</p>
+//    <br> hyperspace-admin loadbalancers url is: <b> <a href="http://${SERVER_URL}"> ${SERVER_URL} </a></b>
+    """
+ 
+  // Override default values based on build status
+  if (buildStatus == 'STARTED') {
+    colorName = 'YELLOW'
+    colorCode = '#FFFF00'
+  } else if (buildStatus == 'SUCCESS') {
+    colorName = 'GREEN'
+    colorCode = '#00FF00'
+  } else {
+    colorName = 'RED'
+    colorCode = '#FF0000'
+  }
+
+  emailext (
+      //to: 'zachi@synereo.com',
+      to: 'zachi@synereo.com',
+      subject: subject,
+      body: details,
+    )
+}
