@@ -115,7 +115,7 @@ def notifyBuild(String buildStatus = 'STARTED') {
 
   emailext (
       //to: 'zachi@synereo.com',
-      to: 'zachi@synereo.com',
+    //  to: 'zachi@synereo.com',
       subject: subject,
       body: details,
     )
